@@ -1,4 +1,4 @@
-name: release
+﻿name: release
 
 on:
   push:
@@ -50,7 +50,7 @@ jobs:
           if ($code -ne 0) { exit 1 }
 
       - name: Report failure as issue
-        if: failure()
+        if: failure() && github.event_name == 'workflow_dispatch'
         uses: actions/github-script@v7
         with:
           script: |
@@ -69,7 +69,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: HV 视频转换器 ${{ github.ref_name }}
+          name: HV 瑙嗛杞崲鍣?${{ github.ref_name }}
           draft: false
           generate_release_notes: true
           files: |
