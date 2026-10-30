@@ -53,3 +53,19 @@ build.ps1         一键构建
 
 - 仅用于转换你有权保存的内容；DRM 保护的流媒体无法处理。
 - 转换前建议保留原 `.m3u8` 与分片，方便失败重试。
+
+## 发布新版本
+
+1. 改 `hvconverter/main.go` 里的 `appVersion`（例如 `1.0.1`）；
+2. 提交并推一个同版本 tag：
+
+    `powershell
+    git commit -am "chore: bump v1.0.1"
+    git push origin master
+    git tag v1.0.1
+    git push origin v1.0.1
+    `
+
+3. GitHub Actions 会自动构建并创建 Release（无需 token），产物：
+   `HVConverter-Portable.exe`、`HVConverter-Setup.exe`；
+4. 用户端启动时会自动检测到新版本并提示下载。
