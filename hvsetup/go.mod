@@ -1,4 +1,4 @@
-﻿module hvsetup
+module hvsetup
 
 go 1.21
 

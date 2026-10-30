@@ -1,4 +1,4 @@
-﻿module hvconverter
+module hvconverter
 
 go 1.21
 
