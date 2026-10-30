@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bufio"
@@ -29,7 +29,7 @@ const (
 
 // GitHub 仓库信息（版本检查用）
 var (
-	repoOwner = "OWNER"
+	repoOwner = "Selinabs"
 	repoName  = "hv-converter"
 )
 

@@ -1,0 +1,56 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Install rsrc (exe icon)
+        shell: pwsh
+        run: |
+          go install github.com/akavel/rsrc@latest
+          "$(go env GOPATH)\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Download static ffmpeg
+        shell: pwsh
+        run: |
+          $url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg -Force
+          $exe = Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Write-Host "ffmpeg: $($exe.FullName)"
+          "FFMPEG_PATH=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $env:Path = "$(go env GOPATH)\bin;$env:Path"
+          ./build.ps1 -Ffmpeg $env:FFMPEG_PATH
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: HV 视频转换器 ${{ github.ref_name }}
+          draft: false
+          generate_release_notes: true
+          files: |
+            dist/HVConverter-Portable.exe
+            dist/HVConverter-Setup.exe
