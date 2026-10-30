@@ -23,7 +23,7 @@ import (
 
 const (
 	appTitle   = "HV 视频转换器"
-	appVersion = "1.1.0"
+	appVersion = "1.1.1"
 	ffmpegHint = "找不到可用的 ffmpeg.exe，请安装 FFmpeg 并加入 PATH。"
 )
 
@@ -70,7 +70,9 @@ func validFfmpeg(p string) bool {
 	if _, err := os.Stat(p); err != nil {
 		return false
 	}
-	out, err := exec.Command(p, "-version").Output()
+	c := exec.Command(p, "-version")
+	c.SysProcAttr = sysProcAttrHidden()
+	out, err := c.Output()
 	return err == nil && strings.Contains(string(out), "ffmpeg version")
 }
 
@@ -655,6 +657,10 @@ func main() {
 		walk.MsgBox(nil, "启动失败", err.Error(), walk.MsgBoxIconError)
 		fmt.Fprintln(os.Stderr, "create failed:", err)
 		return
+	}
+
+	if ic := appIcon(); ic != nil {
+		mw.SetIcon(ic)
 	}
 
 	if srcPath != "" && srcLabel != nil {
