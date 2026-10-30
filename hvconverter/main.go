@@ -23,7 +23,7 @@ import (
 
 const (
 	appTitle   = "HV 视频转换器"
-	appVersion = "1.1.1"
+	appVersion = "1.2.0"
 	ffmpegHint = "找不到可用的 ffmpeg.exe，请安装 FFmpeg 并加入 PATH。"
 )
 

@@ -6,11 +6,14 @@ Windows 小工具：**下载** + **转换**（HLS 分片合并）二合一，带
 
 | 协议 | 说明 |
 |---|---|
+| 视频网页 | 粘贴网页地址即可：先抓 HTML 里的 `video/source`、`og:video`、内联 m3u8/mp4、iframe；抓不到再用 **Edge 无头渲染**取 DOM 后解析（支持 JS 动态加载的播放器） |
 | HTTP(S) 直链 | 多连接分段下载（8 线程 Range），单线程自动回退 |
 | HLS (`m3u8`) | 并发分片下载后拼接；主列表自动选最高码率；加密流回退 ffmpeg 拉流 |
 | BitTorrent | magnet / `.torrent`，DHT + 公开 tracker，支持手动指定 peer |
 
 - **粘贴播放地址 → 自动识别协议 → 自动命名 → 开始下载**（界面“粘贴并下载”按钮）
+- 网页任务会用页面标题作为资源名（含 `og:title`/`<title>` 兜底）
+- 需要登录、会员或 DRM 加密的网站无法解析（这是刻意保留的限制）
 - **保存目录必须手动选择**，每个任务固定保存在 `所选目录\<资源同名目录>\`，不存在时自动创建
 - 可选 **“下载后转为 MP4”**（HLS 拼出的 `.ts` 自动封装为 MP4）
 - **P2P 加速服务器自动更新**：tracker 列表从 [ngosang/trackerslist](https://github.com/ngosang/trackerslist) 拉取，每 24 小时刷新一次，内置离线兜底列表，也可手动点“更新 P2P 服务器”

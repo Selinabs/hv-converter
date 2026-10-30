@@ -85,9 +85,12 @@ func (m *Manager) NewTask(raw string, convert bool) (*Task, error) {
 	}
 	mode := detectMode(raw)
 	name := guessName(raw, mode)
-	dir := filepath.Join(root, name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
+	dir := ""
+	if mode != ModeWeb {
+		dir = filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
 	}
 
 	m.mu.Lock()
@@ -122,6 +125,30 @@ func (m *Manager) Cancel(t *Task) {
 func (m *Manager) run(t *Task) {
 	m.sem <- struct{}{}
 	defer func() { <-m.sem }()
+
+	if t.Mode == ModeWeb {
+		t.setStatus("解析网页中")
+		m.log(fmt.Sprintf("[%s] 解析网页：%s", t.Name, t.URL))
+		media, title, rerr := resolveVideo(t.URL, m.httpc, func(s string) { m.log("  " + s) })
+		if rerr != nil {
+			t.setErr(rerr)
+			m.log(fmt.Sprintf("[%s] 解析失败：%v", t.Name, rerr))
+			return
+		}
+		t.mu.Lock()
+		t.URL = media
+		if title != "" {
+			t.Name = sanitizeName(title)
+		}
+		t.Mode = detectMode(media)
+		t.Dir = filepath.Join(m.Root(), t.Name)
+		t.mu.Unlock()
+		if err := os.MkdirAll(t.Dir, 0o755); err != nil {
+			t.setErr(err)
+			return
+		}
+		m.log(fmt.Sprintf("[%s] 解析到 %s：%s", t.Name, t.Mode, media))
+	}
 
 	if t.ctx.Err() != nil {
 		return

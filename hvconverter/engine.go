@@ -25,6 +25,7 @@ const (
 	ModeHTTP TaskMode = "HTTP"
 	ModeHLS  TaskMode = "HLS"
 	ModeP2P  TaskMode = "P2P"
+	ModeWeb  TaskMode = "网页"
 )
 
 // Task 一个下载任务
@@ -113,20 +114,24 @@ func sanitizeName(s string) string {
 
 func detectMode(raw string) TaskMode {
 	l := strings.ToLower(strings.TrimSpace(raw))
-	switch {
-	case strings.HasPrefix(l, "magnet:"):
-		return ModeP2P
-	case strings.HasSuffix(l, ".torrent"):
-		return ModeP2P
-	case strings.Contains(l, ".m3u8"):
-		return ModeHLS
-	default:
-		return ModeHTTP
+	if isDirectMedia(l) {
+		switch {
+		case strings.HasPrefix(l, "magnet:") || strings.HasSuffix(l, ".torrent"):
+			return ModeP2P
+		case strings.Contains(l, ".m3u8"):
+			return ModeHLS
+		default:
+			return ModeHTTP
+		}
 	}
+	return ModeWeb
 }
 
 // guessName 从 URL 推断资源名（不含扩展名）
 func guessName(raw string, mode TaskMode) string {
+	if mode == ModeWeb {
+		return pageHost(raw)
+	}
 	if mode == ModeP2P && strings.HasPrefix(strings.ToLower(raw), "magnet:") {
 		if u, err := url.Parse(raw); err == nil {
 			if dn := u.Query().Get("dn"); dn != "" {
