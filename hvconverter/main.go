@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	appTitle   = "HV 视频转换器  ·  m3u8 → MP4"
-	appVersion = "1.0.0"
+	appTitle   = "HV 视频转换器"
+	appVersion = "1.1.0"
 	ffmpegHint = "找不到可用的 ffmpeg.exe，请安装 FFmpeg 并加入 PATH。"
 )
 
@@ -541,7 +541,17 @@ func main() {
 	force := flag.Bool("force", false, "覆盖已存在的 MP4")
 	workersFlag := flag.Int("workers", 2, "并发转换数")
 	noUpdate := flag.Bool("no-update-check", false, "跳过版本检查")
+	dlURL := flag.String("dl", "", "命令行下载地址（m3u8/mp4/magnet）")
+	dlSave := flag.String("save", "", "命令行下载保存目录")
+	dlConvert := flag.Bool("dl-convert", false, "下载后转换为 MP4")
+	dlWorkers := flag.Int("dl-workers", 2, "下载并发任务数")
+	dlPeer := flag.String("dl-peer", "", "手动指定 peer（ip:port，逗号分隔）")
 	flag.Parse()
+
+	if *dlURL != "" {
+		runDownloadCLI(*dlURL, *dlSave, *dlConvert, *dlWorkers, *dlPeer)
+		return
+	}
 
 	if *cli || *src != "" {
 		logPath := ""
@@ -564,61 +574,79 @@ func main() {
 		outPath = defaultOutDir()
 	}
 
+	dlModel = &taskTableModel{}
+	mgr = NewManager(func(s string) { appendDlLog(s) })
+	saveRoot = loadSaveRoot()
+	if saveRoot != "" {
+		mgr.SetRoot(saveRoot)
+	}
+
 	if err := (MainWindow{
 		AssignTo: &mw,
 		Title:    appTitle + "  v" + appVersion,
-		Size:     Size{Width: 920, Height: 660},
-		MinSize:  Size{Width: 760, Height: 500},
+		Size:     Size{Width: 1300, Height: 820},
+		MinSize:  Size{Width: 840, Height: 580},
 		Layout:   VBox{},
 		Children: []Widget{
-			Composite{
-				Layout: VBox{},
-				Children: []Widget{
-					Composite{
-						Layout: HBox{},
+			TabWidget{
+				Pages: []TabPage{
+					downloadPage(),
+					{
+						Title:  "转换（m3u8 目录）",
+						Layout: VBox{},
 						Children: []Widget{
-							PushButton{Text: "选择源目录…", MinSize: Size{Width: 118}, MaxSize: Size{Width: 140}, OnClicked: browseSrc},
-							Label{AssignTo: &srcLabel, Text: "（未选择）"},
-							HSpacer{},
+							Composite{
+								Layout: VBox{},
+								Children: []Widget{
+									Composite{
+										Layout: HBox{},
+										Children: []Widget{
+											PushButton{Text: "选择源目录…", MinSize: Size{Width: 118}, MaxSize: Size{Width: 140}, OnClicked: browseSrc},
+											Label{AssignTo: &srcLabel, Text: "（未选择）"},
+											HSpacer{},
+										},
+									},
+									Composite{
+										Layout: HBox{},
+										Children: []Widget{
+											PushButton{Text: "输出目录…", MinSize: Size{Width: 118}, MaxSize: Size{Width: 140}, OnClicked: browseOut},
+											Label{AssignTo: &outLabel, Text: outPath},
+											HSpacer{},
+										},
+									},
+									Composite{
+										Layout: HBox{},
+										Children: []Widget{
+											CheckBox{AssignTo: &forceChk, Text: "覆盖已存在的 MP4"},
+											Label{Text: "并发数："},
+											ComboBox{AssignTo: &workerBox, MinSize: Size{Width: 60}, MaxSize: Size{Width: 70},
+												Model: []string{"1", "2", "3", "4"}, CurrentIndex: 1},
+											PushButton{AssignTo: &startBtn, Text: "开始转换", MinSize: Size{Width: 96}, MaxSize: Size{Width: 110}, OnClicked: startConversion},
+											PushButton{AssignTo: &stopBtn, Text: "停止", MinSize: Size{Width: 74}, MaxSize: Size{Width: 90}, Enabled: false, OnClicked: stopConversion},
+											PushButton{Text: "打开输出目录", MinSize: Size{Width: 110}, MaxSize: Size{Width: 130}, OnClicked: openOutDir},
+											HSpacer{},
+										},
+									},
+									Composite{
+										Layout: HBox{},
+										Children: []Widget{
+											Label{AssignTo: &statusLabel, Text: "就绪"},
+											HSpacer{},
+										},
+									},
+								},
+							},
+							GroupBox{
+								Title:  "转换日志",
+								Layout: VBox{},
+								Children: []Widget{
+									TextEdit{
+										AssignTo: &logEdit, ReadOnly: true, VScroll: true, HScroll: true,
+										Text: "选择源目录后点击“开始转换”。\r\n输出文件名 = 源文件所在目录名。重名文件默认跳过，勾选“覆盖已存在的 MP4”可强制重转。\r\n",
+									},
+								},
+							},
 						},
-					},
-					Composite{
-						Layout: HBox{},
-						Children: []Widget{
-							PushButton{Text: "输出目录…", MinSize: Size{Width: 118}, MaxSize: Size{Width: 140}, OnClicked: browseOut},
-							Label{AssignTo: &outLabel, Text: outPath},
-							HSpacer{},
-						},
-					},
-					Composite{
-						Layout: HBox{},
-						Children: []Widget{
-							CheckBox{AssignTo: &forceChk, Text: "覆盖已存在的 MP4"},
-							Label{Text: "并发数："},
-							ComboBox{AssignTo: &workerBox, MinSize: Size{Width: 60}, MaxSize: Size{Width: 70},
-								Model: []string{"1", "2", "3", "4"}, CurrentIndex: 1},
-							PushButton{AssignTo: &startBtn, Text: "开始转换", MinSize: Size{Width: 96}, MaxSize: Size{Width: 110}, OnClicked: startConversion},
-							PushButton{AssignTo: &stopBtn, Text: "停止", MinSize: Size{Width: 74}, MaxSize: Size{Width: 90}, Enabled: false, OnClicked: stopConversion},
-							PushButton{Text: "打开输出目录", MinSize: Size{Width: 110}, MaxSize: Size{Width: 130}, OnClicked: openOutDir},
-							HSpacer{},
-						},
-					},
-					Composite{
-						Layout: HBox{},
-						Children: []Widget{
-							Label{AssignTo: &statusLabel, Text: "就绪"},
-							HSpacer{},
-						},
-					},
-				},
-			},
-			GroupBox{
-				Title:  "转换日志",
-				Layout: VBox{},
-				Children: []Widget{
-					TextEdit{
-						AssignTo: &logEdit, ReadOnly: true, VScroll: true, HScroll: true,
-						Text: "选择源目录后点击“开始转换”。\r\n输出文件名 = 源文件所在目录名。重名文件默认跳过，勾选“覆盖已存在的 MP4”可强制重转。\r\n",
 					},
 				},
 			},
@@ -635,6 +663,11 @@ func main() {
 	if outPath != "" && outLabel != nil {
 		outLabel.SetText(outPath)
 	}
+	if saveRoot != "" && saveLabel != nil {
+		saveLabel.SetText(saveRoot)
+	}
+
+	startUITicker()
 
 	mw.Starting().Attach(func() {
 		if !*noUpdate {

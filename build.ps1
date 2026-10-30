@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+$env:CGO_ENABLED = '0'
 $root = $PSScriptRoot
 $src = Join-Path $root 'hvconverter'
 $setup = Join-Path $root 'hvsetup'
