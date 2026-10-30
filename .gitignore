@@ -1,0 +1,19 @@
+# 构建产物
+dist/
+*.exe
+hvconverter/payload/
+hvsetup/payload/
+hvsetup/rsrc.syso
+hvconverter/rsrc.syso
+hvsetup/setup.manifest
+hvsetup/app.ico
+hvconverter/app.png
+
+# 临时/证据
+evidence/
+_m3u8test*/
+_guitest/
+_guiout/
+_qtest/
+_qout/
+_q.log
