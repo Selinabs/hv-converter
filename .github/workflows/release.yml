@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   build:
@@ -25,26 +26,46 @@ jobs:
         shell: pwsh
         run: |
           go install github.com/akavel/rsrc@latest
-          "$(go env GOPATH)\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "$(go env GOPATH)\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Download static ffmpeg
         shell: pwsh
         run: |
-          $url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
-          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg -Force
           $exe = Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           Write-Host "ffmpeg: $($exe.FullName)"
-          "FFMPEG_PATH=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build
         shell: pwsh
         run: |
+          $exe = Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $exe) { "ffmpeg not found" | Tee-Object -FilePath build.log; exit 1 }
+          Write-Host "using ffmpeg: $($exe.FullName)"
           $env:Path = "$(go env GOPATH)\bin;$env:Path"
-          ./build.ps1 -Ffmpeg $env:FFMPEG_PATH
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $ErrorActionPreference = 'Continue'
+          ./build.ps1 -Ffmpeg $exe.FullName *>&1 | Tee-Object -FilePath build.log
+          $code = $LASTEXITCODE
+          Write-Host "build exit=$code"
+          if ($code -ne 0) { exit 1 }
+
+      - name: Report failure as issue
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = 'build failed (no log captured)';
+            try { body = fs.readFileSync('build.log', 'utf8').slice(-8000); } catch (e) { body = 'log read error: ' + e.message; }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `build failed: ${context.ref}`,
+              body: '```\n' + body + '\n```'
+            });
 
       - name: Publish release
+        if: success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
