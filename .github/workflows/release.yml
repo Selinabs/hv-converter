@@ -1,4 +1,4 @@
-﻿name: release
+name: release
 
 on:
   push:
@@ -12,6 +12,17 @@ permissions:
 
 jobs:
   build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x64: original build, file names unchanged for existing users
+          - arch: amd64
+            ffmpeg_kind: zip
+            ffmpeg_url: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+          # arm64: cross-compiled on the x64 runner, ffmpeg from tordona/ffmpeg-win-arm64
+          - arch: arm64
+            ffmpeg_kind: 7z
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -28,15 +39,25 @@ jobs:
           go install github.com/akavel/rsrc@latest
           "$(go env GOPATH)\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      - name: Download static ffmpeg
+      - name: Download ffmpeg (${{ matrix.arch }})
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile ffmpeg.zip
-          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg -Force
+          if ('${{ matrix.ffmpeg_kind }}' -eq '7z') {
+            $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/tordona/ffmpeg-win-arm64/releases/latest' -Headers @{ 'User-Agent' = 'hv-converter-ci' }
+            $asset = $rel.assets | Where-Object { $_.name -like '*essentials-static-win-arm64.7z' } | Select-Object -First 1
+            if (-not $asset) { throw 'no arm64 ffmpeg asset found in the latest release' }
+            Write-Host "asset: $($asset.name)"
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile ffmpeg.7z
+            & 7z x ffmpeg.7z -offmpeg -y | Select-Object -Last 3
+          } else {
+            Invoke-WebRequest -Uri '${{ matrix.ffmpeg_url }}' -OutFile ffmpeg.zip
+            Expand-Archive ffmpeg.zip -DestinationPath ffmpeg -Force
+          }
           $exe = Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $exe) { throw 'ffmpeg.exe not found after extraction' }
           Write-Host "ffmpeg: $($exe.FullName)"
 
-      - name: Build
+      - name: Build (${{ matrix.arch }})
         shell: pwsh
         run: |
           $exe = Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1
@@ -44,7 +65,7 @@ jobs:
           Write-Host "using ffmpeg: $($exe.FullName)"
           $env:Path = "$(go env GOPATH)\bin;$env:Path"
           $ErrorActionPreference = 'Continue'
-          ./build.ps1 -Ffmpeg $exe.FullName *>&1 | Tee-Object -FilePath build.log
+          ./build.ps1 -Ffmpeg $exe.FullName -Arch ${{ matrix.arch }} *>&1 | Tee-Object -FilePath build.log
           $code = $LASTEXITCODE
           Write-Host "build exit=$code"
           if ($code -ne 0) { exit 1 }
@@ -60,18 +81,37 @@ jobs:
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `build failed: ${context.ref}`,
+              title: `build failed: ${context.ref} (${{ matrix.arch }})`,
               body: '```\n' + body + '\n```'
             });
 
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/*.exe
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
       - name: Publish release
-        if: success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: HV 瑙嗛杞崲鍣?${{ github.ref_name }}
+          name: HV 视频转换器 ${{ github.ref_name }}
           draft: false
           generate_release_notes: true
           files: |
-            dist/HVConverter-Portable.exe
-            dist/HVConverter-Setup.exe
+            artifacts/HVConverter-Portable.exe
+            artifacts/HVConverter-Setup.exe
+            artifacts/HVConverter-Portable-arm64.exe
+            artifacts/HVConverter-Setup-arm64.exe

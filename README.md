@@ -37,6 +37,7 @@ Windows 小工具：**下载** + **转换**（HLS 分片合并）二合一，带
 
 - `HVConverter-Setup.exe`：安装版（含 ffmpeg，用户级安装、可卸载）
 - `HVConverter-Portable.exe`：单文件免安装版（含 ffmpeg，首次运行解压到 `%LOCALAPPDATA%\HVConverter\cache`）
+- `HVConverter-Setup-arm64.exe` / `HVConverter-Portable-arm64.exe`：**Windows on ARM64**（骁龙 X 系列、Surface Pro 等）原生版本，功能相同；x64 版可以在 ARM64 上模拟运行，但原生版启动更快、更省电
 
 ## 命令行
 
@@ -58,7 +59,15 @@ HVConverter-Portable.exe -cli -src "D:\hls" -out "D:\out" -workers 3
 .\build.ps1 -Ffmpeg "C:\path\to\ffmpeg.exe"
 ```
 
-产物：`dist\hvconverter.exe`、`dist\HVConverter-Portable.exe`、`dist\HVConverter-Setup.exe`
+编译 ARM64 版本（交叉编译，x64 主机即可）：
+
+```powershell
+.\build.ps1 -Ffmpeg "C:\path\to\ffmpeg-arm64.exe" -Arch arm64
+```
+
+注意：`-Ffmpeg` 指向的 ffmpeg 必须与目标架构一致，否则打出来的包在对应机器上跑不起转换功能。
+
+产物：`dist\hvconverter.exe`、`dist\HVConverter-Portable.exe`、`dist\HVConverter-Setup.exe`；ARM64 版命名为 `dist\HVConverter-Portable-arm64.exe`、`dist\HVConverter-Setup-arm64.exe`。
 
 ## 目录结构
 

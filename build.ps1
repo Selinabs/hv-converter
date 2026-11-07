@@ -1,10 +1,16 @@
 param(
     [string]$Ffmpeg = '',
-    [string]$Version = '1.0.0'
+    [string]$Version = '1.0.0',
+    [ValidateSet('amd64', 'arm64')]
+    [string]$Arch = 'amd64'
 )
 
 $ErrorActionPreference = 'Continue'
 $env:CGO_ENABLED = '0'
+$env:GOOS = 'windows'
+$env:GOARCH = $Arch
+# amd64 keeps the original file names; other architectures get a suffix.
+$archSuffix = if ($Arch -eq 'amd64') { '' } else { "-$Arch" }
 $root = $PSScriptRoot
 $src = Join-Path $root 'hvconverter'
 $setup = Join-Path $root 'hvsetup'
@@ -45,7 +51,7 @@ Push-Location $src
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit 1 }
 
 Write-Host '=== 3/5 编译便携版 ==='
-& go build -tags portable -ldflags "-H=windowsgui -s -w" -o HVConverter-Portable.exe .
+& go build -tags portable -ldflags "-H=windowsgui -s -w" -o "HVConverter-Portable$archSuffix.exe" .
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit 1 }
 Pop-Location
 
@@ -63,20 +69,22 @@ Compress-File (Join-Path $setup 'cleanup_build.exe') (Join-Path $setup 'payload\
 Remove-Item (Join-Path $setup 'cleanup_build.exe') -Force -ErrorAction SilentlyContinue
 
 Write-Host '=== 5/5 编译安装器 ==='
+$syso = Join-Path $setup 'rsrc.syso'
+if (Test-Path $syso) { Remove-Item $syso -Force }
 if (Get-Command rsrc.exe -ErrorAction SilentlyContinue) {
-    & rsrc.exe -manifest setup.manifest -ico app.ico -o rsrc.syso
+    & rsrc.exe -arch $Arch -manifest setup.manifest -ico app.ico -o rsrc.syso
 }
-& go build -ldflags "-H=windowsgui -s -w" -o HVConverter-Setup.exe .
+& go build -ldflags "-H=windowsgui -s -w" -o "HVConverter-Setup$archSuffix.exe" .
 $rc = $LASTEXITCODE
 Pop-Location
 if ($rc -ne 0) { exit 1 }
 
 Copy-Item (Join-Path $src 'hvconverter.exe') $dist -Force
-Copy-Item (Join-Path $src 'HVConverter-Portable.exe') $dist -Force
-Copy-Item (Join-Path $setup 'HVConverter-Setup.exe') $dist -Force
+Copy-Item (Join-Path $src "HVConverter-Portable$archSuffix.exe") $dist -Force
+Copy-Item (Join-Path $setup "HVConverter-Setup$archSuffix.exe") $dist -Force
 
 Write-Host ''
-Write-Host "构建完成（v$Version）：" -ForegroundColor Green
+Write-Host "构建完成（v$Version, $Arch）：" -ForegroundColor Green
 Get-ChildItem $dist -Filter '*.exe' | ForEach-Object {
     Write-Host ("  {0,-28} {1} MB" -f $_.Name, [math]::Round($_.Length / 1MB, 1))
 }
