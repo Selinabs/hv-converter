@@ -26,6 +26,17 @@ var (
 	reJSONURL = regexp.MustCompile(`(?i)"contentUrl"\s*:\s*"([^"]+)"`)
 )
 
+// matchValue 返回第一个捕获组；正则没有捕获组时退回整段匹配（reM3U8 / reMP4 就没有分组）。
+func matchValue(m []string) string {
+	if len(m) > 1 {
+		return m[1]
+	}
+	if len(m) > 0 {
+		return m[0]
+	}
+	return ""
+}
+
 func isDirectMedia(raw string) bool {
 	l := strings.ToLower(raw)
 	if strings.HasPrefix(l, "magnet:") {
@@ -124,7 +135,7 @@ func extractFromHTML(ctx context.Context, client *http.Client, pageURL string, d
 	var cands []string
 	for _, re := range []*regexp.Regexp{reM3U8, reMP4, reSrc, reOG, reJSONURL} {
 		for _, m := range re.FindAllStringSubmatch(html, -1) {
-			v := strings.TrimSpace(m[1])
+			v := strings.TrimSpace(matchValue(m))
 			if v == "" {
 				continue
 			}
@@ -203,7 +214,7 @@ func extractWithBrowser(pageURL string, log func(string)) (string, string, error
 	var cands []string
 	for _, re := range []*regexp.Regexp{reM3U8, reMP4, reSrc, reOG, reJSONURL} {
 		for _, m := range re.FindAllStringSubmatch(html, -1) {
-			v := strings.TrimSpace(m[1])
+			v := strings.TrimSpace(matchValue(m))
 			if v != "" {
 				cands = append(cands, resolveURL(pageURL, v))
 			}
