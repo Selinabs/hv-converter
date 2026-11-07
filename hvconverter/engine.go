@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +53,61 @@ type Task struct {
 	lastTick time.Time
 	lastDone int64
 	mu       sync.Mutex
+
+	segTotal int64
+	segDone  int64
+}
+
+// setSegTotal 设置 HLS 分片总数（用于分片级进度）
+func (t *Task) setSegTotal(n int64) {
+	t.mu.Lock()
+	t.segTotal = n
+	t.mu.Unlock()
+}
+
+func (t *Task) addSegDone(n int64) {
+	t.mu.Lock()
+	t.segDone += n
+	t.mu.Unlock()
+}
+
+// setTotalMs / setDoneMs 供 ffmpeg 分支使用：进度以毫秒计
+func (t *Task) setTotalMs(ms int64) {
+	t.mu.Lock()
+	t.Total = ms
+	t.mu.Unlock()
+}
+
+func (t *Task) setDoneMs(ms int64) {
+	t.mu.Lock()
+	if ms > t.Done {
+		t.Done = ms
+	}
+	t.mu.Unlock()
+}
+
+// percent 返回任务进度百分比：优先用分片进度，其次用字节进度
+func (t *Task) percent() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.segTotal > 0 {
+		p := int(t.segDone * 100 / t.segTotal)
+		if p > 100 {
+			p = 100
+		}
+		return p
+	}
+	if t.Total > 0 {
+		p := int(t.Done * 100 / t.Total)
+		if p > 100 {
+			p = 100
+		}
+		return p
+	}
+	if t.Status == "已完成" {
+		return 100
+	}
+	return 0
 }
 
 func (t *Task) snap() (string, string, string, int64, int64, float64, string) {
@@ -480,22 +539,167 @@ func parseMaster(text string) []hlsVariant {
 	return out
 }
 
-func parseMedia(text string) (segs []string, encrypted bool) {
+// hlsKey 表示 #EXT-X-KEY 的解析结果
+type hlsKey struct {
+	method string
+	uri    string
+	iv     []byte
+}
+
+// splitAttrs 按逗号切分属性列表，保留引号内的逗号
+func splitAttrs(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inQuote := false
+	for _, r := range s {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+			cur.WriteRune(r)
+		case r == ',' && !inQuote:
+			out = append(out, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// parseKeyLine 解析 #EXT-X-KEY 行
+func parseKeyLine(line string) hlsKey {
+	k := hlsKey{}
+	body := strings.TrimPrefix(line, "#EXT-X-KEY:")
+	for _, part := range splitAttrs(body) {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		name := strings.ToUpper(strings.TrimSpace(kv[0]))
+		val := strings.Trim(strings.TrimSpace(kv[1]), `"`)
+		switch name {
+		case "METHOD":
+			k.method = val
+		case "URI":
+			k.uri = val
+		case "IV":
+			v := strings.TrimPrefix(strings.TrimPrefix(val, "0x"), "0X")
+			if b, err := hex.DecodeString(v); err == nil {
+				k.iv = b
+			}
+		}
+	}
+	return k
+}
+
+// parseMedia 解析媒体播放列表：分片、加密信息与媒体序号
+func parseMedia(text string) (segs []string, key hlsKey, seq int64) {
 	for _, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "#EXT-X-KEY") {
-			encrypted = true
+		switch {
+		case strings.HasPrefix(line, "#EXT-X-MEDIA-SEQUENCE:"):
+			v := strings.TrimSpace(strings.TrimPrefix(line, "#EXT-X-MEDIA-SEQUENCE:"))
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				seq = n
+			}
+		case strings.HasPrefix(line, "#EXT-X-KEY:"):
+			k := parseKeyLine(line)
+			if strings.EqualFold(k.method, "NONE") {
+				key = hlsKey{}
+				continue
+			}
+			if k.method != "" {
+				key = k
+			}
+		case strings.HasPrefix(line, "#"):
 			continue
+		default:
+			segs = append(segs, line)
 		}
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		segs = append(segs, line)
 	}
 	return
+}
+
+// ivFromSeq 未显式给出 IV 时，按 HLS 规范用媒体序号构造
+func ivFromSeq(seq int64) []byte {
+	iv := make([]byte, aes.BlockSize)
+	binary.BigEndian.PutUint64(iv[8:], uint64(seq))
+	return iv
+}
+
+// decryptAES128 解密 AES-128-CBC 分片并去掉 PKCS#7 填充
+func decryptAES128(data, key, iv []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(iv) != aes.BlockSize {
+		return nil, fmt.Errorf("IV 长度异常: %d", len(iv))
+	}
+	if len(data) == 0 || len(data)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("密文长度 %d 不是 16 的倍数", len(data))
+	}
+	out := make([]byte, len(data))
+	cipher.NewCBCDecrypter(block, iv).CryptBlocks(out, data)
+	if n := int(out[len(out)-1]); n > 0 && n <= aes.BlockSize && n <= len(out) {
+		out = out[:len(out)-n]
+	}
+	return out, nil
+}
+
+// looksLikeMedia 判断解密结果是否是媒体分片（MPEG-TS 或 fMP4）
+func looksLikeMedia(b []byte) bool {
+	if len(b) < 16 {
+		return false
+	}
+	if b[0] == 0x47 {
+		return true
+	}
+	switch string(b[4:8]) {
+	case "ftyp", "styp", "moof":
+		return true
+	}
+	return false
+}
+
+// fetchBytes 下载整个响应体（用于分片与密钥）
+func fetchBytes(ctx context.Context, client *http.Client, raw string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 HVConverter/"+appVersion)
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			time.Sleep(time.Duration(attempt+1) * time.Second)
+			continue
+		}
+		if resp.StatusCode >= 400 {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			time.Sleep(time.Duration(attempt+1) * time.Second)
+			continue
+		}
+		b, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err == nil {
+			return b, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // downloadHLS 并发下载分片并拼接
@@ -516,12 +720,41 @@ func downloadHLS(ctx context.Context, t *Task, client *http.Client, log func(str
 		}
 	}
 
-	segs, encrypted := parseMedia(text)
+	segs, key, seq := parseMedia(text)
 	if len(segs) == 0 {
 		return "", errors.New("m3u8 中没有分片")
 	}
-	if encrypted {
-		return "", errHLSEncrypted
+
+	var keyBytes []byte
+	if key.method != "" {
+		if !strings.EqualFold(key.method, "AES-128") {
+			// SAMPLE-AES 等无法自行解密，仍交给 ffmpeg
+			return "", errHLSEncrypted
+		}
+		if key.uri == "" {
+			return "", errors.New("加密流缺少密钥地址")
+		}
+		keyBytes, err = fetchBytes(ctx, client, resolveURL(base, key.uri))
+		if err != nil {
+			return "", fmt.Errorf("获取解密密钥失败: %w", err)
+		}
+		if len(keyBytes) != 16 {
+			return "", fmt.Errorf("解密密钥长度异常: %d", len(keyBytes))
+		}
+		// 先验证第一个分片能否正确解密；不合法说明不是标准 AES-128，交给 ffmpeg
+		probeRaw, perr := fetchBytes(ctx, client, resolveURL(base, segs[0]))
+		if perr != nil {
+			return "", perr
+		}
+		probeIV := key.iv
+		if len(probeIV) != aes.BlockSize {
+			probeIV = ivFromSeq(seq)
+		}
+		probe, derr := decryptAES128(probeRaw, keyBytes, probeIV)
+		if derr != nil || !looksLikeMedia(probe) {
+			return "", errHLSEncrypted
+		}
+		log("检测到 AES-128 加密，密钥校验通过，边下载边解密")
 	}
 
 	tmp := filepath.Join(t.Dir, ".hvparts")
@@ -535,6 +768,7 @@ func downloadHLS(ctx context.Context, t *Task, client *http.Client, log func(str
 	sem := make(chan struct{}, workers)
 	var wg sync.WaitGroup
 	errs := make(chan error, len(segs))
+	t.setSegTotal(int64(len(segs)))
 
 	for i, seg := range segs {
 		if ctx.Err() != nil {
@@ -546,10 +780,29 @@ func downloadHLS(ctx context.Context, t *Task, client *http.Client, log func(str
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			u := resolveURL(base, ref)
-			dst := filepath.Join(tmp, fmt.Sprintf("%05d.ts", idx))
-			if err := fetchToFile(ctx, client, t, u, dst); err != nil {
-				errs <- fmt.Errorf("分片 %d: %w", idx, err)
+			data, ferr := fetchBytes(ctx, client, u)
+			if ferr != nil {
+				errs <- fmt.Errorf("分片 %d: %w", idx, ferr)
+				return
 			}
+			if key.method != "" {
+				iv := key.iv
+				if len(iv) != aes.BlockSize {
+					iv = ivFromSeq(seq + int64(idx))
+				}
+				data, ferr = decryptAES128(data, keyBytes, iv)
+				if ferr != nil {
+					errs <- fmt.Errorf("分片 %d 解密失败: %w", idx, ferr)
+					return
+				}
+			}
+			dst := filepath.Join(tmp, fmt.Sprintf("%05d.ts", idx))
+			if werr := os.WriteFile(dst, data, 0o644); werr != nil {
+				errs <- fmt.Errorf("分片 %d 写入失败: %w", idx, werr)
+				return
+			}
+			t.addDone(int64(len(data)))
+			t.addSegDone(1)
 		}(i, seg)
 	}
 	wg.Wait()

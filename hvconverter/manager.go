@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -196,22 +199,74 @@ func (m *Manager) downloadHLS(t *Task) ([]string, error) {
 	if !errors.Is(err, errHLSEncrypted) {
 		return nil, err
 	}
-	// 加密 HLS：交给 ffmpeg 直接拉流
-	m.log("[HLS] 检测到加密流，改用 ffmpeg 下载")
+	// 非标准加密（SAMPLE-AES 或密钥不匹配）：交给 ffmpeg 拉流
+	m.log("[HLS] 无法直接解密，改用 ffmpeg 拉流")
 	ff, ferr := findFfmpeg()
 	if ferr != nil {
 		return nil, ferr
 	}
+	// 拿到总时长，用于把 ffmpeg 的 out_time_ms 换算成百分比
+	if txt, e := httpText(t.ctx, m.httpc, t.URL); e == nil {
+		if ms := hlsTotalDurationMs(txt); ms > 0 {
+			t.setTotalMs(ms)
+		}
+	}
 	out := filepath.Join(t.Dir, t.Name+".ts")
-	cmd := exec.CommandContext(t.ctx, ff, "-hide_banner", "-nostats", "-loglevel", "error", "-y",
+	args := []string{
+		"-hide_banner", "-nostats", "-loglevel", "error", "-progress", "pipe:1", "-y",
 		"-allowed_extensions", "ALL",
 		"-protocol_whitelist", "file,http,https,tcp,tls,crypto",
-		"-i", t.URL, "-c", "copy", out)
+		"-i", t.URL, "-c", "copy", out,
+	}
+	cmd := exec.CommandContext(t.ctx, ff, args...)
 	cmd.SysProcAttr = sysProcAttrHidden()
-	if b, e := cmd.CombinedOutput(); e != nil {
-		return nil, fmt.Errorf("ffmpeg 拉流失败: %v %s", e, strings.TrimSpace(string(b)))
+	stdout, perr := cmd.StdoutPipe()
+	if perr != nil {
+		return nil, perr
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	go func() {
+		sc := bufio.NewScanner(stdout)
+		for sc.Scan() {
+			line := sc.Text()
+			if strings.HasPrefix(line, "out_time_ms=") {
+				if v, e := strconv.ParseInt(strings.TrimPrefix(line, "out_time_ms="), 10, 64); e == nil {
+					t.setDoneMs(v / 1000)
+				}
+			}
+		}
+	}()
+	werr := cmd.Wait()
+	if t.ctx.Err() != nil {
+		return nil, t.ctx.Err()
+	}
+	if werr != nil {
+		return nil, fmt.Errorf("ffmpeg 拉流失败: %v %s", werr, strings.TrimSpace(stderr.String()))
 	}
 	return []string{out}, nil
+}
+
+// hlsTotalDurationMs 累加 EXTINF，得到播放列表总时长（毫秒）
+func hlsTotalDurationMs(text string) int64 {
+	var total float64
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#EXTINF:") {
+			continue
+		}
+		v := strings.TrimPrefix(line, "#EXTINF:")
+		if i := strings.IndexByte(v, ','); i >= 0 {
+			v = v[:i]
+		}
+		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+			total += f
+		}
+	}
+	return int64(total * 1000)
 }
 
 // convertAfterDownload 下载后可选转换为 mp4

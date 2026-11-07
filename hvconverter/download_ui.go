@@ -21,6 +21,7 @@ var (
 	dlModel    *taskTableModel
 	dlLog      *walk.TextEdit
 	dlStatus   *walk.Label
+	dlProgress *walk.ProgressBar
 	saveRoot   string
 )
 
@@ -49,8 +50,8 @@ func (m *taskTableModel) Value(row, col int) interface{} {
 	case 1:
 		return mode
 	case 2:
-		if total > 0 {
-			return fmt.Sprintf("%.1f%%", float64(done)/float64(total)*100)
+		if p := tasks[row].percent(); p > 0 || total > 0 {
+			return fmt.Sprintf("%d%%", p)
 		}
 		return fmt.Sprintf("%.1f MB", float64(done)/1024/1024)
 	case 3:
@@ -198,6 +199,49 @@ func cancelSelectedTask() {
 	dlModel.PublishRowsReset()
 }
 
+// cancelAllTasks 取消所有未结束的任务
+func cancelAllTasks() {
+	if mgr == nil {
+		return
+	}
+	n := 0
+	for _, t := range mgr.Tasks() {
+		_, _, status, _, _, _, _ := t.snap()
+		if status == "已完成" || status == "失败" || status == "已取消" {
+			continue
+		}
+		mgr.Cancel(t)
+		n++
+	}
+	appendDlLog(fmt.Sprintf("已停止 %d 个任务", n))
+	if dlModel != nil {
+		dlModel.PublishRowsReset()
+	}
+}
+
+// overallPercent 汇总所有任务的进度，用于底部进度条
+func overallPercent() int {
+	if mgr == nil {
+		return 0
+	}
+	sum, n := 0, 0
+	for _, t := range mgr.Tasks() {
+		_, _, status, _, _, _, _ := t.snap()
+		p := t.percent()
+		if status == "已完成" {
+			p = 100
+		}
+		if status == "已完成" || status == "下载中" || status == "解析网页中" || p > 0 {
+			sum += p
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / n
+}
+
 func openSaveRoot() {
 	if saveRoot == "" {
 		chooseSaveRoot()
@@ -265,6 +309,15 @@ func downloadPage() TabPage {
 			Composite{
 				Layout: HBox{},
 				Children: []Widget{
+					Label{Text: "总进度：", MinSize: Size{Width: 62}},
+					ProgressBar{AssignTo: &dlProgress, MaxValue: 100, MinSize: Size{Width: 280}, MaxSize: Size{Width: 420}},
+					PushButton{Text: "停止全部", MinSize: Size{Width: 92}, MaxSize: Size{Width: 100}, OnClicked: cancelAllTasks},
+					HSpacer{},
+				},
+			},
+			Composite{
+				Layout: HBox{},
+				Children: []Widget{
 					Label{AssignTo: &dlStatus, Text: "就绪"},
 					HSpacer{},
 				},
@@ -306,6 +359,12 @@ func startUITicker() {
 			dlTable.Synchronize(func() {
 				if dlModel != nil {
 					dlModel.PublishRowsReset()
+				}
+				if dlProgress != nil {
+					v := overallPercent()
+					if v != dlProgress.Value() {
+						dlProgress.SetValue(v)
+					}
 				}
 			})
 		}
