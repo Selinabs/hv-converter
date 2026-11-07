@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bytes"
@@ -25,7 +25,7 @@ var payload embed.FS
 const (
 	appName    = "HV 视频转换器"
 	appExeName = "hvconverter.exe"
-	appVersion = "1.0.0"
+	appVersion = "1.3.0"
 	regKeyPath = `Software\Microsoft\Windows\CurrentVersion\Uninstall\HVConverter`
 )
 
