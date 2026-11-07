@@ -46,6 +46,14 @@ Write-Host '=== 1/5 便携版载荷 ==='
 Compress-File $Ffmpeg (Join-Path $src 'payload\ffmpeg.exe.gz')
 
 Write-Host '=== 2/5 编译主程序 ==='
+# 主程序也需要 comctl32 v6 manifest：缺失时 Win11 上 ToolTip 创建会失败（TTM_ADDTOOL failed）
+$appSyso = Join-Path $src 'rsrc.syso'
+if (Test-Path $appSyso) { Remove-Item $appSyso -Force }
+if (Get-Command rsrc.exe -ErrorAction SilentlyContinue) {
+    Push-Location $src
+    & rsrc.exe -arch $Arch -manifest app.manifest -ico app.ico -o rsrc.syso
+    Pop-Location
+}
 Push-Location $src
 & go build -ldflags "-H=windowsgui -s -w" -o hvconverter.exe .
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit 1 }
@@ -54,6 +62,7 @@ Write-Host '=== 3/5 编译便携版 ==='
 & go build -tags portable -ldflags "-H=windowsgui -s -w" -o "HVConverter-Portable$archSuffix.exe" .
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit 1 }
 Pop-Location
+Remove-Item $appSyso -Force -ErrorAction SilentlyContinue
 
 Write-Host '=== 4/5 安装器载荷 ==='
 Compress-File (Join-Path $src 'hvconverter.exe') (Join-Path $setup 'payload\app.exe.gz')
